@@ -1,6 +1,7 @@
 #!/bin/bash
 # NameSileCertbot-DNS-01 0.2.2
 ## https://stackoverflow.com/questions/59895
+set -x
 SOURCE="${BASH_SOURCE[0]}"
 while [ -h "$SOURCE"  ]; do
   DIR="$( cd -P "$( dirname "$SOURCE"  )" && pwd  )"
@@ -8,23 +9,20 @@ while [ -h "$SOURCE"  ]; do
   [[ $SOURCE != /*  ]] && SOURCE="$DIR/$SOURCE"
 done
 DIR="$( cd -P "$( dirname "$SOURCE"  )" && pwd  )"
-echo "Received request for" "${CERTBOT_DOMAIN}"
-cd ${DIR}
+cd $DIR
 source config.sh
-
-DOMAIN=${CERTBOT_DOMAIN}
+DOMAIN="$CERTBOT_DOMAIN"
+echo "Received request for" "$DOMAIN"
 
 ## Get current list (updating may alter rrid, etc)
-curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=xml&key=$APIKEY&domain=$DOMAIN" > $CACHE$DOMAIN.xml
+curl -s "https://www.namesilo.com/api/dnsListRecords?version=1&type=xml&key=$APIKEY&domain=$DOMAIN" > $CACHE_DIR/$DOMAIN.xml
 
 ## Check for existing ACME record
-if grep -q "_acme-challenge" $CACHE$DOMAIN.xml ; then
-
-	## Get record ID
-	RECORD_ID=`xmllint --xpath "//namesilo/reply/resource_record/record_id[../host/text() = '_acme-challenge.$DOMAIN' ]" $CACHE$DOMAIN.xml | grep -oP '(?<=<record_id>).*?(?=</record_id>)'`
+RECORD_ID=`xmllint --xpath "//namesilo/reply/resource_record/record_id[../host/text() = '_acme-challenge.$DOMAIN' ]/text()" $CACHE_DIR/$DOMAIN.xml 2>/dev/null`
+if [ -n "$RECORD_ID" ]; then
 	## Update DNS record in Namesilo:
-	curl -s "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=xml&key=$APIKEY&domain=$DOMAIN&rrid=$RECORD_ID" > $RESPONSE
-	RESPONSE_CODE=`xmllint --xpath "//namesilo/reply/code/text()"  $RESPONSE`
+	curl -s "https://www.namesilo.com/api/dnsDeleteRecord?version=1&type=xml&key=$APIKEY&domain=$DOMAIN&rrid=$RECORD_ID" > $RESPONSE_FILE
+	RESPONSE_CODE=`xmllint --xpath "//namesilo/reply/code/text()"  $RESPONSE_FILE`
 	## Process response, maybe wait
 
 	case $RESPONSE_CODE in
@@ -32,26 +30,22 @@ if grep -q "_acme-challenge" $CACHE$DOMAIN.xml ; then
 			echo "ACME challenge record successfully removed"
 			;;
 		280)
-			RESPONSE_DETAIL=`xmllint --xpath "//namesilo/reply/detail/text()"  $RESPONSE`
+			RESPONSE_DETAIL=`xmllint --xpath "//namesilo/reply/detail/text()"  $RESPONSE_FILE`
 			echo "Record removal failed."
-			echo "Domain: $DOMAIN"
-			echo "rrid: $RECORD_ID"
-			echo "reason: $RESPONSE_DETAIL"
-			;;
-		*)
-			RESPONSE_DETAIL=`xmllint --xpath "//namesilo/reply/detail/text()"  $RESPONSE`
-			echo "Namesilo returned code: $RESPONSE_CODE"
 			echo "Reason: $RESPONSE_DETAIL"
 			echo "Domain: $DOMAIN"
-			echo "rrid: $RECORD_ID"
+			echo "Record ID: $RECORD_ID"
+			;;
+		*)
+			RESPONSE_DETAIL=`xmllint --xpath "//namesilo/reply/detail/text()"  $RESPONSE_FILE`
+			echo "Return code: $RESPONSE_CODE"
+			echo "Reason: $RESPONSE_DETAIL"
+			echo "Domain: $DOMAIN"
+			echo "Record ID: $RECORD_ID"
 			;;
 	esac
 
 fi
 
-if [ -f $RESPONSE ] ; then
-	rm $RESPONSE
-fi
-if [ -f $CACHE$DOMAIN.xml ] ; then
-	rm $CACHE$DOMAIN.xml
-fi
+[ -f $RESPONSE_FILE ] && rm $RESPONSE_FILE
+[ -f $CACHE_DIR/$DOMAIN.xml ] && rm $CACHE_DIR/$DOMAIN.xml
